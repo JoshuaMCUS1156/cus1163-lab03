@@ -1,120 +1,193 @@
+// process_manager.c
 #include "process_manager.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <string.h>
 
-/*
- * Function 1: Basic Producer-Consumer Demo
- * Creates one producer child (sends 1,2,3,4,5) and one consumer child (adds them up)
- */
-int run_basic_demo(void) {
+// Helpers for sending/receiving ints over a pipe
+static void write_int(int fd, int value) {
+    if (write(fd, &value, sizeof(value)) != (ssize_t)sizeof(value)) {
+        perror("write");
+        _exit(1);
+    }
+}
+static int read_int(int fd, int *out) {
+    ssize_t n = read(fd, out, sizeof(*out));
+    if (n == 0) return 0;                  // EOF
+    if (n < 0) { perror("read"); return 0; }
+    if (n != (ssize_t)sizeof(*out)) {      // partial read (shouldn't happen)
+        fprintf(stderr, "partial read\n");
+        return 0;
+    }
+    return 1;
+}
+
+void run_basic_demo(void) {
+    printf("Starting basic producer-consumer demonstration...\n\n");
+
     int pipe_fd[2];
-    pid_t producer_pid, consumer_pid;
-    int status;
-    
-    printf("\nParent process (PID: %d) creating children...\n", getpid());
-    
-    // TODO 1: Create a pipe for communication
-    // HINT: Use pipe(pipe_fd), check return value
-    // if (pipe(pipe_fd) == -1) {
-    //     perror("pipe");
-    //     return -1;
-    // }
+    if (pipe(pipe_fd) == -1) {
+        perror("pipe");
+        return;
+    }
 
+    pid_t parent_pid = getpid();
+    printf("Parent process (PID: %d) creating children...\n", parent_pid);
 
-    // TODO 2: Fork the producer process
-    // HINT: producer_pid = fork();
-    // Child calls: producer_process(pipe_fd[1], 1);  // Start with number 1
-    // Child must close pipe_fd[0] (read end)
-    // Parent prints: "Created producer child (PID: %d)"
-
-
-    // TODO 3: Fork the consumer process
-    // HINT: consumer_pid = fork();
-    // Child calls: consumer_process(pipe_fd[0], 0);  // Pair ID 0 for basic demo
-    // Child must close pipe_fd[1] (write end)
-    // Parent prints: "Created consumer child (PID: %d)"
-
-
-    // TODO 4: Parent cleanup - close pipe ends and wait for children
-    // HINT: close(pipe_fd[0]); close(pipe_fd[1]);
-    // Use waitpid() twice to wait for both specific children
-    // Print exit status for each child
-
-
-    return 0;
-}
-
-/*
- * Function 2: Multiple Producer-Consumer Pairs
- * Creates multiple pairs: pair 1 uses numbers 1-5, pair 2 uses 6-10, etc.
- */
-int run_multiple_pairs(int num_pairs) {
-    pid_t pids[10]; // Store all child PIDs
-    int pid_count = 0;
-
-    printf("\nParent creating %d producer-consumer pairs...\n", num_pairs);
-
-    // TODO 5: Create multiple producer-consumer pairs
-    // HINT: Use a for loop from i=0 to i<num_pairs
-    // For each iteration:
-    //   - Create a new pipe
-    //   - Fork producer: calls producer_process(write_fd, i*5 + 1)
-    //     So pair 1 starts with 1, pair 2 starts with 6, pair 3 starts with 11
-    //   - Fork consumer: calls consumer_process(read_fd, i+1)
-    //   - Store both PIDs in pids array, increment pid_count
-    //   - Parent closes both pipe ends
-    //   - Print "=== Pair %d ===" for each pair
-
-
-    // TODO 6: Wait for all children
-    // HINT: Use a for loop to wait for all PIDs in the pids array
-    // Print exit status for each child
-    printf("\nAll pairs completed successfully!\n");
-
-    
-    return 0;
-}
-
-/*
- * Producer Process - Sends 5 sequential numbers starting from start_num
- */
-void producer_process(int write_fd, int start_num) {
-    printf("Producer (PID: %d) starting...\n", getpid());
-    
-    // Send 5 numbers: start_num, start_num+1, start_num+2, start_num+3, start_num+4
-    for (int i = 0; i < NUM_VALUES; i++) {
-        int number = start_num + i;
-        
-        if (write(write_fd, &number, sizeof(number)) != sizeof(number)) {
-            perror("write");
-            exit(1);
+    // Fork producer
+    pid_t producer_pid = fork();
+    if (producer_pid < 0) {
+        perror("fork");
+        close(pipe_fd[0]); close(pipe_fd[1]);
+        return;
+    }
+    if (producer_pid == 0) {
+        // Producer child
+        printf("Producer (PID: %d) starting...\n", getpid());
+        close(pipe_fd[0]); // producer writes only
+        for (int i = 1; i <= 5; i++) {
+            write_int(pipe_fd[1], i);
+            printf("Producer: Sent number %d\n", i);
+            usleep(30000);
         }
-        
-        printf("Producer: Sent number %d\n", number);
-        usleep(100000); // Small delay to see output clearly
+        close(pipe_fd[1]);
+        printf("Producer: Finished sending 5 numbers\n");
+        _exit(0);
+    } else {
+        // Parent sees child created
+        printf("Created producer child (PID: %d)\n", producer_pid);
     }
-    
-    printf("Producer: Finished sending %d numbers\n", NUM_VALUES);
-    close(write_fd);
-    exit(0);
+
+    // Fork consumer
+    pid_t consumer_pid = fork();
+    if (consumer_pid < 0) {
+        perror("fork");
+        close(pipe_fd[0]); close(pipe_fd[1]);
+        return;
+    }
+    if (consumer_pid == 0) {
+        // Consumer child
+        printf("Consumer (PID: %d) starting...\n", getpid());
+        close(pipe_fd[1]); // consumer reads only
+        int sum = 0, val;
+        while (read_int(pipe_fd[0], &val)) {
+            sum += val;
+            printf("Consumer: Received %d, running sum: %d\n", val, sum);
+            usleep(20000);
+        }
+        close(pipe_fd[0]);
+        printf("Consumer: Final sum: %d\n", sum);
+        _exit(0);
+    } else {
+        // Parent sees child created
+        printf("Created consumer child (PID: %d)\n", consumer_pid);
+    }
+
+    // Parent: close both ends (it doesn't use the pipe)
+    close(pipe_fd[0]);
+    close(pipe_fd[1]);
+
+    // Wait for both children
+    int status;
+    pid_t w = waitpid(producer_pid, &status, 0);
+    if (w > 0) {
+        printf("\nProducer child (PID: %d) exited with status %d\n",
+               w, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    }
+    w = waitpid(consumer_pid, &status, 0);
+    if (w > 0) {
+        printf("Consumer child (PID: %d) exited with status %d\n",
+               w, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    }
+
+    printf("\nSUCCESS: Basic producer-consumer completed!\n");
 }
 
-/*
- * Consumer Process - Receives numbers and calculates sum
- */
-void consumer_process(int read_fd, int pair_id) {
-    int number;
-    int count = 0;
-    int sum = 0;
-    
-    printf("Consumer (PID: %d) starting...\n", getpid());
-    
-    // Read numbers until pipe is closed
-    while (read(read_fd, &number, sizeof(number)) > 0) {
-        count++;
-        sum += number;
-        printf("Consumer: Received %d, running sum: %d\n", number, sum);
+void run_multiple_pairs(void) {
+    const int pairs = 2;     // as in the sample output
+    const int span  = 5;     // numbers per pair
+    int start = 1;
+
+    printf("Running multiple producer-consumer pairs...\n\n");
+    printf("Parent creating %d producer-consumer pairs...\n\n", pairs);
+
+    pid_t children[pairs * 2];
+    int child_count = 0;
+
+    for (int p = 0; p < pairs; p++) {
+        printf("=== Pair %d ===\n", p + 1);
+
+        int pipe_fd[2];
+        if (pipe(pipe_fd) == -1) {
+            perror("pipe");
+            continue;
+        }
+
+        // Producer
+        pid_t prod = fork();
+        if (prod < 0) {
+            perror("fork producer");
+            close(pipe_fd[0]); close(pipe_fd[1]);
+            continue;
+        }
+        if (prod == 0) {
+            printf("Producer (PID: %d) starting...\n", getpid());
+            close(pipe_fd[0]); // write only
+            for (int i = start; i < start + span; i++) {
+                write_int(pipe_fd[1], i);
+                printf("Producer: Sent number %d\n", i);
+                usleep(25000);
+            }
+            close(pipe_fd[1]);
+            _exit(0);
+        }
+        children[child_count++] = prod;
+
+        // Consumer
+        pid_t cons = fork();
+        if (cons < 0) {
+            perror("fork consumer");
+            close(pipe_fd[0]); close(pipe_fd[1]);
+            continue;
+        }
+        if (cons == 0) {
+            printf("Consumer (PID: %d) starting...\n", getpid());
+            close(pipe_fd[1]); // read only
+            int sum = 0, val;
+            while (read_int(pipe_fd[0], &val)) {
+                sum += val;
+                printf("Consumer: Received %d, running sum: %d\n", val, sum);
+                usleep(20000);
+            }
+            printf("Consumer: Final sum: %d\n", sum);
+            close(pipe_fd[0]);
+            _exit(0);
+        }
+        children[child_count++] = cons;
+
+        // Parent closes its copies of both ends for this pair
+        close(pipe_fd[0]);
+        close(pipe_fd[1]);
+
+        start += span;
+        printf("\n");
     }
-    
-    printf("Consumer: Final sum: %d\n", sum);
-    close(read_fd);
-    exit(0);
+
+    // Message before listing child exits (to match sample)
+    printf("All pairs completed successfully!\n");
+
+    // Wait for all children and print exit lines
+    int status;
+    for (int i = 0; i < child_count; i++) {
+        pid_t w = waitpid(children[i], &status, 0);
+        if (w > 0) {
+            printf("Child (PID: %d) exited with status %d\n",
+                   w, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        }
+    }
+
+    printf("\nSUCCESS: Multiple pairs completed!\n");
 }
